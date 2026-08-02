@@ -77,6 +77,24 @@ Then save manually after any future rule changes:
 sudo netfilter-persistent save
 ```
 
+## Verify it survived a reboot
+
+Reboot the VM (`sudo reboot`), then SSH back in and check:
+
+```bash
+sudo iptables -t nat -L POSTROUTING
+```
+
+You should still see the MASQUERADE line after reboot — that proves it persisted.
+
+Then on the laptop:
+
+```bash
+curl ifconfig.me
+```
+
+You should still see the Azure IP.
+
 ## Step 6: Use the exit node on your laptop (Windows)
 
 Install Tailscale on the laptop and sign in to the same account.
