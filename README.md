@@ -128,8 +128,135 @@ report the Azure location.
 
 ## Steam notes
 
-- If Steam client itself struggles, add `-tcp` to its launch options.
+- If Steam client itself fails, add `-tcp` to its launch options.
 - Gameplay traffic (UDP 27000-27050) is handled by the tunnel automatically.
+
+---
+
+# Faster option: Xray VLESS+Reality tunnel (no relay)
+
+Tailscale on college WiFi is forced onto a DERP relay (TCP 443), which caps you at
+roughly 6 Mbps. If you want your real speed back, run a direct tunnel from your laptop
+to the Azure VM over TCP 443 — one hop, no middleman, looks like normal HTTPS to the
+firewall.
+
+Route: laptop → (TCP 443, direct) → Azure VM → internet
+
+## Server: install Xray on the Azure VM
+
+```bash
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+```
+
+## Generate your keys and IDs
+
+```bash
+xray uuid                                # UUID (client id)
+xray x25519                              # PrivateKey + PublicKey
+openssl rand -hex 8                      # shortId (16 hex chars)
+```
+
+Note: if `xray` isn't on your PATH, run the binaries from `/usr/local/xray/`.
+
+## Server config — `/usr/local/etc/xray/config.json`
+
+Replace the placeholders (UUID, PrivateKey, shortId) with your generated values:
+
+```json
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "REPLACE_UUID", "flow": "xtls-rprx-vision" }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "www.microsoft.com:443",
+          "serverNames": ["www.microsoft.com"],
+          "privateKey": "REPLACE_PRIVATE_KEY",
+          "shortIds": ["REPLACE_SHORTID"]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom" },
+    { "protocol": "blackhole" }
+  ]
+}
+```
+
+## Apply the config
+
+```bash
+sudo systemctl restart xray
+sudo systemctl enable xray
+sudo systemctl status xray        # confirm "active (running)"
+```
+
+## Open port 443 in Azure
+
+In the Azure portal go to the VM → **Networking → Inbound port rules** → add:
+TCP **443**, destination `*`, source `Internet`, action `Allow`.
+
+## Client: v2rayN on Windows
+
+1. Download **v2rayN** from https://github.com/2dust/v2rayN/releases and unzip.
+2. Edit the `config.json` inside v2rayN's folder with your REAL Azure config
+   (the same one from above) and start it.
+3. Server → Add; or edit `config.json`:
+   - Address: your Azure VM **public IP**
+   - Port: `443`
+   - UUID: `REPLACE_UUID`
+   - Flow: `xtls-rprx-vision`
+   - Encryption: `none`
+   - Network: `tcp`
+   - Security: `reality`
+   - Fingerprint: `chrome`
+   - SNI / ServerName: `www.microsoft.com`
+   - PublicKey: `REPLACE_PUBLIC_KEY`
+   - ShortID: `REPLACE_SHORTID`
+4. Select the server, then enable **TUN mode** in v2rayN so ALL traffic (including
+   Steam/game UDP) goes through the tunnel.
+
+## Verify
+
+```powershell
+curl ifconfig.me
+```
+
+Should show the Azure IP — at real throughput this time.
+
+## Why Reality instead of a plain TLS cert
+
+Reality uses no certificate at all: it fronts a real website (Microsoft) so even
+DPI firewalls see an ordinary HTTPS connection to microsoft.com. More robust than
+TLS with a self-signed cert, and no domain needed.
+
+## Optional: enable BBR for better throughput
+
+```bash
+echo -e 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr' | sudo tee -a /etc/sysctl.d/99-tailscale-exit.conf
+sudo sysctl --system
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Connection refused on 443 | Open port 443 in Azure NSG; confirm `systemctl status xray` active |
+| Handshake fails / user error | Check `journalctl -u xray -n 50`; UUID/keys/shortId must match client exactly |
+| Still slow | Full path is now direct TCP; check VM's Azure outbound bandwidth |
 
 ## Honest warning
 
